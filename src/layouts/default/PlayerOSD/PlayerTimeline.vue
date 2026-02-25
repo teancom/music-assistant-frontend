@@ -60,6 +60,7 @@
 <script setup lang="ts">
 import api from "@/plugins/api";
 import { MediaType } from "@/plugins/api/interfaces";
+import { companionMode } from "@/plugins/companion";
 import { store } from "@/plugins/store";
 import { useActiveSource } from "@/composables/activeSource";
 import { formatDuration } from "@/helpers/utils";
@@ -176,47 +177,54 @@ const computedElapsedTime = computed(() => {
     return curTimeValue.value;
   }
 
+  // Compute raw elapsed from server data
+  let rawElapsed = 0;
+
   // Prefer queue-level elapsed_time if available
   const queue = store.activePlayerQueue;
   if (queue?.elapsed_time != null && queue?.elapsed_time_last_updated != null) {
-    const computed = computeElapsedTime(
-      queue.elapsed_time,
-      queue.elapsed_time_last_updated,
-      queue.state,
-    );
-    return computed ?? 0;
-  }
-
-  // Fallback to player-level elapsed_time. This is used for external/3rd-party
-  // sources currently playing on the player (not for Music Assistant queue
-  // playback). Use the player-level fields when no activePlayerQueue is set.
-  // Prefer current_media timing when available (external source playing on the player)
-  if (
+    rawElapsed =
+      computeElapsedTime(
+        queue.elapsed_time,
+        queue.elapsed_time_last_updated,
+        queue.state,
+      ) ?? 0;
+  } else if (
+    // Fallback to player-level elapsed_time (external/3rd-party sources)
     store.activePlayer?.current_media?.elapsed_time != null &&
     store.activePlayer?.current_media?.elapsed_time_last_updated != null
   ) {
-    const computed = computeElapsedTime(
-      store.activePlayer.current_media.elapsed_time,
-      store.activePlayer.current_media.elapsed_time_last_updated,
-      store.activePlayer?.playback_state,
-    );
-    return computed ?? 0;
-  }
-
-  // Fall back to player-level elapsed_time (legacy / provider-level value)
-  if (
+    rawElapsed =
+      computeElapsedTime(
+        store.activePlayer.current_media.elapsed_time,
+        store.activePlayer.current_media.elapsed_time_last_updated,
+        store.activePlayer?.playback_state,
+      ) ?? 0;
+  } else if (
+    // Fall back to player-level elapsed_time (legacy / provider-level value)
     store.activePlayer?.elapsed_time != null &&
     store.activePlayer?.elapsed_time_last_updated != null
   ) {
-    const computed = computeElapsedTime(
-      store.activePlayer.elapsed_time,
-      store.activePlayer.elapsed_time_last_updated,
-      store.activePlayer?.playback_state,
-    );
-    return computed ?? 0;
+    rawElapsed =
+      computeElapsedTime(
+        store.activePlayer.elapsed_time,
+        store.activePlayer.elapsed_time_last_updated,
+        store.activePlayer?.playback_state,
+      ) ?? 0;
   }
 
-  return 0;
+  // In companion mode, the Sendspin backend calibrates the total pipeline
+  // offset (server internal buffer + network + client queue) and pushes it
+  // to the window. Subtract it so the progress bar matches actual DAC output.
+  if (companionMode.value) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const offsetMs: number = (window as any).__SENDSPIN_PIPELINE_OFFSET_MS__ ?? 0;
+    if (offsetMs > 0) {
+      rawElapsed = Math.max(0, rawElapsed - offsetMs / 1000);
+    }
+  }
+
+  return rawElapsed;
 });
 
 const chapterTicks = computed(() => {
